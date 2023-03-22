@@ -95,22 +95,74 @@ try
     File.Copy(@"pex-1.2.0.js", Path.Join(WorkingPath, "idolmaster", "js", "pex-1.2.0.js"), true);
     File.Copy(@"pex-1.2.0-kr.js", Path.Join(WorkingPath, "idolmaster", "js", "pex-1.2.0-kr.js"), true);
 
-
+    // # 아이돌마스터 신데렐라 걸즈 아이돌 갤러리 아카이브
+    // ## 보존된 아이돌 갤러리 목록
+    // * [이름...](idols/(unique name))
+    // ## 보존된 기타 커뮤 목록
+    // * [이름...](etc/commu/(unique name))
+    // ## 푸치 갤러리 목록
+    // * [이름...](etc/(unique name))
     Console.WriteLine("Archiving complete");
-    if (!File.Exists(Path.Join(WorkingPath, "index.md")))
+    Dictionary<(string Type, string UniqueName), (string CustomName, string Type, string UniqueName)> dic = new();
+    if (File.Exists(Path.Join(WorkingPath, "index.md")))
     {
-        File.WriteAllText(Path.Join(WorkingPath, "index.md"),
-            "# 아이돌마스터 신데렐라 걸즈 아이돌 갤러리 아카이브\r\n## 보존된 아이돌 갤러리 목록\r\n"
-            + string.Join(Environment.NewLine, idolsToArchive.Select(x => $"* [{x.IdolName}](idols/{x.IdolName})"))
-            + Environment.NewLine);
-    }
-    else
-    {
-        File.AppendAllText(Path.Join(WorkingPath, "index.md"),
-            string.Join(Environment.NewLine, idolsToArchive.Select(x => $"* [{x.IdolName}](idols/{x.IdolName})"))
-            + Environment.NewLine);
+        string text = File.ReadAllText(Path.Join(WorkingPath, "index.md"));
+        foreach (Match match in Regex.Matches(text, @"\* \[(?<customName>[^\]]+)\]\((?<type>idols|etc\/commu|etc\/puchi)\/(?<uniqueName>.*)\)"))
+        {
+            string customName = match.Groups["customName"].Value;
+            string type = match.Groups["type"].Value;
+            string uniqueName = match.Groups["uniqueName"].Value;
+
+            dic[(type, uniqueName)] = (customName, type, uniqueName);
+        }
     }
 
+    foreach (Idol idol in idolsToArchive)
+    {
+        dic[("idols", idol.IdolName)] = (idol.IdolName, "idols", idol.IdolName);
+    }
+
+    foreach (Commu commu in commusToArchive)
+    {
+        dic[("etc/commu", commu.CommuName)] = (commu.CommuName, "etc/commu", commu.CommuName);
+    }
+
+    if (!string.IsNullOrWhiteSpace(config.PuchiProfileName))
+    {
+        dic[("etc/puchi", config.PuchiProfileName)] = (config.PuchiProfileName, "etc", config.PuchiProfileName);
+    }
+
+    {
+        StringBuilder sb = new();
+        sb.AppendLine("# 아이돌마스터 신데렐라 걸즈 아이돌 갤러리 아카이브");
+
+        var groups = dic.GroupBy(x => x.Key.Type, x => x.Value);
+        
+        foreach (var group in groups)
+        {
+            var title = group.Key switch
+            {
+                "etc/puchi" => "## 보존된 푸치 프로필 목록",
+                "etc/commu" => "## 보존된 기타 커뮤 목록",
+                "idols" => "## 보존된 아이돌 갤러리 목록",
+                _ => null
+            };
+
+            if (title == null) 
+            {
+                Console.WriteLine($"Omitting unknown type of {group.Key}");
+                continue;
+            }
+
+            sb.AppendLine(title);
+            foreach (var entry in group)
+            {
+                sb.AppendLine($"* [{entry.CustomName}]({entry.Type}/{entry.UniqueName})");
+            }
+            
+        }
+        File.WriteAllText(Path.Join(WorkingPath, "index.md"), sb.ToString());
+    }
 
     async Task ArchiveGallery(string idolName, string galleryLink)
     {
@@ -142,7 +194,7 @@ try
 
         Console.WriteLine("Start archiving of Puchi profile");
         var responseStream = await client.GetStreamAsync(puchiProfilePage);
-        FileInfo info = new(Path.Join(WorkingPath, "etc", folderName, "index.html"));
+        FileInfo info = new(Path.Join(WorkingPath, "etc", "puchi", folderName, "index.html"));
         info.Directory?.Create();
         FileStream fs = info.Create();
         responseStream.CopyTo(fs);
@@ -171,7 +223,7 @@ try
                 coordRequest.Content = new FormUrlEncodedContent(new Dictionary<string, string>() { ["type"] = "0", ["deck_position"] = i.ToString() });
                 var coordResponse = await client.SendAsync(coordRequest);
                 var coordStream = await coordResponse.EnsureSuccessStatusCode().Content.ReadAsStreamAsync();
-                FileInfo coordFile = new(Path.Join(WorkingPath, "etc", folderName, $"coordinateList-{i}.json"));
+                FileInfo coordFile = new(Path.Join(WorkingPath, "etc", "puchi", folderName, $"coordinateList-{i}.json"));
                 using FileStream coordFileStream = coordFile.Create();
                 coordStream.CopyTo(coordFileStream);
             }
@@ -207,7 +259,7 @@ try
                 request.Content = new FormUrlEncodedContent(new Dictionary<string, string>() { ["deck_position"] = i.ToString() });
                 var response = await client.SendAsync(request);
                 var stream = await response.EnsureSuccessStatusCode().Content.ReadAsStreamAsync();
-                FileInfo fileInfo = new(Path.Join(WorkingPath, "etc", folderName, $"idolStatus-{i}.json"));
+                FileInfo fileInfo = new(Path.Join(WorkingPath, "etc", "puchi", folderName, $"idolStatus-{i}.json"));
                 using FileStream fileStream = fileInfo.Create();
                 stream.CopyTo(fileStream);
             }
@@ -250,7 +302,7 @@ try
                 request.Content = new FormUrlEncodedContent(new Dictionary<string, string>() { ["idol_id"] = characterId });
                 var response = await client.SendAsync(request);
                 var stream = await response.EnsureSuccessStatusCode().Content.ReadAsStreamAsync();
-                FileInfo fileInfo = new(Path.Join(WorkingPath, "etc", folderName, $"episodeList-{characterId}.json"));
+                FileInfo fileInfo = new(Path.Join(WorkingPath, "etc", "puchi", folderName, $"episodeList-{characterId}.json"));
                 using FileStream fileStream = fileInfo.Create();
                 stream.CopyTo(fileStream);
             }
@@ -285,7 +337,7 @@ try
                 request.Content = new FormUrlEncodedContent(new Dictionary<string, string>() { ["deck_position"] = i.ToString() });
                 var response = await client.SendAsync(request);
                 var stream = await response.EnsureSuccessStatusCode().Content.ReadAsStreamAsync();
-                FileInfo fileInfo = new(Path.Join(WorkingPath, "etc", folderName, $"idolCommentList-{i}.json"));
+                FileInfo fileInfo = new(Path.Join(WorkingPath, "etc", "puchi", folderName, $"idolCommentList-{i}.json"));
                 using FileStream fileStream = fileInfo.Create();
                 stream.CopyTo(fileStream);
             }
@@ -334,14 +386,14 @@ try
 
         foreach ((string position, string characterId) in characterIds)
         {
-            string content = File.ReadAllText(Path.Join(WorkingPath, "etc", folderName, $"episodeList-{characterId}.json"));
+            string content = File.ReadAllText(Path.Join(WorkingPath, "etc", "puchi", folderName, $"episodeList-{characterId}.json"));
             using JsonDocument episodeDoc = JsonDocument.Parse(content);
             var episodeList = episodeDoc.RootElement.GetProperty("episode_list").EnumerateArray().Select(x => (EpisodeVoice: x.GetProperty("episode_voice").GetString()!, EpisodeId: x.GetProperty("episode_id").GetString()!));
             bool hasVoice = episodeList.FirstOrDefault().EpisodeVoice == "1";
             foreach (var episode in episodeList) {
                 string url = $"https://sp.pf.mbga.jp/12008305/?guid=ON&amp;url=http%3A%2F%2Fmobamas.net%2Fidolmaster%2Fpetit_cg%2Fpetit_show_episode%2F{characterId}%2F{episode.EpisodeId}%2Fcoordinate_idol%2F{position}%3Fvoice_flag%3D{(hasVoice ? "1" : "0")}%26l_frm%3DPetit_cg_index_1";
                 var stream = await client.GetStreamAsync(url);
-                FileInfo fileInfo = new(Path.Join(WorkingPath, "etc", folderName, characterId, episode.EpisodeId, "index.html"));
+                FileInfo fileInfo = new(Path.Join(WorkingPath, "etc", "puchi", folderName, characterId, episode.EpisodeId, "index.html"));
                 fileInfo.Directory?.Create();
                 FileStream fileStream = fileInfo.Create();
                 stream.CopyTo(fileStream);
