@@ -1,6 +1,9 @@
 ﻿// See https://aka.ms/new-console-template for more information
 using HtmlAgilityPack;
 
+using Spectre.Console.Rendering;
+using Spectre.Console;
+
 using SwfLib;
 using SwfLib.Actions;
 using SwfLib.Tags.ActionsTags;
@@ -15,6 +18,7 @@ using System.Web;
 // Configuration variables
 try
 {
+    Console.OutputEncoding = Encoding.Unicode;
     Configuration config = JsonSerializer.Deserialize<Configuration>(File.ReadAllText(@"configuration.json"), new JsonSerializerOptions(JsonSerializerDefaults.Web));
 
     string WorkingPath = config.WorkingPath;
@@ -67,30 +71,54 @@ try
     "_frm%3DIdol_story_movie_play_1",
     "_frm%3DCampaign_present_redirect_flash_idol_comment_replay_"
 };
+    await AnsiConsole.Progress()
+        .AutoRefresh(true)
+        .AutoClear(false)
+        .HideCompleted(true)
+        .Columns(new ProgressColumn[] {
+            new TaskDescriptionColumn(),
+            new ProgressBarColumn(),
+            new CountColumn(),
+            new PercentageColumn(),
+            new SpinnerColumn()
+        })
+        .StartAsync(async ctx => {
 
-    foreach (Idol idol in idolsToArchive)
-    {
-        await ArchiveGallery(idol.IdolName, idol.GalleryUrl);
-    }
+            if (idolsToArchive.Length != 0)
+            {
+                ProgressTask task = ctx.AddTask("[green]Archiving Galleries[/]", true, idolsToArchive.Length);
+                foreach (Idol idol in idolsToArchive) {
+                    await ArchiveGallery(idol.IdolName, idol.GalleryUrl, ctx);
+                    task.Increment(1);
+                }
+            }
 
-    foreach (Commu commu in commusToArchive)
-    {
-        // Create a directory in WorkingPath/idols/etc/episodes/commuName.
-        // This is so that the absolute path match up even after moving it into more specific idol's folder
-        FileInfo info = new FileInfo(Path.Join(WorkingPath, "idols", "etc", "episodes", commu.CommuName, "index.html"));
-        info.Directory?.Create();
-        
-        using Stream stream = await client.GetStreamAsync(commu.CommuUrl);
-        FileStream fs = info.Create();
-        stream.CopyTo(fs);
-        fs.Close();
-        await HandleEpisodeHtml(info);
-    }
+            if (commusToArchive.Length != 0)
+            {
+                ProgressTask task = ctx.AddTask("[green]Archiving Extra Commus[/]", true, commusToArchive.Length);
+                foreach (Commu commu in commusToArchive) {
+                    // Create a directory in WorkingPath/idols/etc/episodes/commuName.
+                    // This is so that the absolute path match up even after moving it into more specific idol's folder
+                    FileInfo info = new FileInfo(Path.Join(WorkingPath, "idols", "etc", "episodes", commu.CommuName, "index.html"));
+                    info.Directory?.Create();
 
-    if (!string.IsNullOrWhiteSpace(config.PuchiProfileName))
-    {
-        await ArchivePuchi(config.PuchiProfileName);
-    }
+                    using Stream stream = await client.GetStreamAsync(commu.CommuUrl);
+                    FileStream fs = info.Create();
+                    stream.CopyTo(fs);
+                    fs.Close();
+                    await HandleEpisodeHtml(info, ctx);
+                    task.Increment(1);
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(config.PuchiProfileName))
+            {
+                ProgressTask task = ctx.AddTask("[green]Archiving Puchi Profile Page[/]", true, 1);
+                task.IsIndeterminate = true;
+                await ArchivePuchi(config.PuchiProfileName, ctx);
+                task.StopTask();
+            }
+        });
 
     File.Copy(@"pex-1.2.0.js", Path.Join(WorkingPath, "idolmaster", "js", "pex-1.2.0.js"), true);
     File.Copy(@"pex-1.2.0-kr.js", Path.Join(WorkingPath, "idolmaster", "js", "pex-1.2.0-kr.js"), true);
@@ -101,8 +129,8 @@ try
     // ## 보존된 기타 커뮤 목록
     // * [이름...](etc/commu/(unique name))
     // ## 푸치 갤러리 목록
-    // * [이름...](etc/(unique name))
-    Console.WriteLine("Archiving complete");
+    // * [이름...](etc/puchi/(unique name))
+    AnsiConsole.MarkupLine("[green]Archiving complete[/]");
     Dictionary<(string Type, string UniqueName), (string CustomName, string Type, string UniqueName)> dic = new();
     if (File.Exists(Path.Join(WorkingPath, "index.md")))
     {
@@ -129,7 +157,7 @@ try
 
     if (!string.IsNullOrWhiteSpace(config.PuchiProfileName))
     {
-        dic[("etc/puchi", config.PuchiProfileName)] = (config.PuchiProfileName, "etc", config.PuchiProfileName);
+        dic[("etc/puchi", config.PuchiProfileName)] = (config.PuchiProfileName, "etc/puchi", config.PuchiProfileName);
     }
 
     {
@@ -150,7 +178,7 @@ try
 
             if (title == null) 
             {
-                Console.WriteLine($"Omitting unknown type of {group.Key}");
+                ConsoleLogger.LogWarning($"Omitting unknown type of {group.Key}");
                 continue;
             }
 
@@ -164,9 +192,12 @@ try
         File.WriteAllText(Path.Join(WorkingPath, "index.md"), sb.ToString());
     }
 
-    async Task ArchiveGallery(string idolName, string galleryLink)
+    async Task ArchiveGallery(string idolName, string galleryLink, ProgressContext ctx)
     {
-        Console.WriteLine($"Start archiving of {idolName}");
+        ConsoleLogger.LogInfo($"Start archiving of {idolName}");
+        ProgressTask task = ctx.AddTask($"[green]Archiving {idolName}[/]", true, 1);
+        task.IsIndeterminate = true;
+
         var response = await client.GetAsync(new Uri(galleryLink));
         FileInfo info = new FileInfo(Path.Join(WorkingPath, "idols", idolName, "index.html"));
         info.Directory?.Create();
@@ -181,18 +212,19 @@ try
             .Remove();
 
         doc.Save(info.FullName);
-        await DownloadEpisodes(info.FullName, idolName);
-        await MatchDownloadAndReplace(info.FullName, info.FullName, "");
+        await DownloadEpisodes(info.FullName, idolName, ctx);
+        await MatchDownloadAndReplace(info.FullName, info.FullName, "", ctx);
+        task.StopTask();
     }
 
     string EscapePattern(string str) => str.Replace("(", "\\(").Replace(")", "\\)").Replace("{", "\\{").Replace("}", "\\}").Replace(".", "\\.").Replace("/", "\\/").Replace("?", "\\?").Replace("$", "\\$").Replace("\r\n", "\n");
 
 
-    async Task ArchivePuchi(string folderName)
+    async Task ArchivePuchi(string folderName, ProgressContext ctx)
     {
         const string puchiProfilePage = "https://sp.pf.mbga.jp/12008305/?guid=ON&url=http%3A%2F%2Fmobamas.net%2Fidolmaster%2Fpetit_cg%3Fview_page%3D4";
 
-        Console.WriteLine("Start archiving of Puchi profile");
+        ConsoleLogger.LogInfo("Start archiving of Puchi profile");
         var responseStream = await client.GetStreamAsync(puchiProfilePage);
         FileInfo info = new(Path.Join(WorkingPath, "etc", "puchi", folderName, "index.html"));
         info.Directory?.Create();
@@ -208,8 +240,6 @@ try
 
         doc.Save(info.FullName);
 
-        await MatchDownloadAndReplace(info.FullName, info.FullName, "");
-        
         StringBuilder sb = new(File.ReadAllText(info.FullName));
         // TODO:
         // 2. 'type' is 0
@@ -388,8 +418,9 @@ try
         {
             string content = File.ReadAllText(Path.Join(WorkingPath, "etc", "puchi", folderName, $"episodeList-{characterId}.json"));
             using JsonDocument episodeDoc = JsonDocument.Parse(content);
-            var episodeList = episodeDoc.RootElement.GetProperty("episode_list").EnumerateArray().Select(x => (EpisodeVoice: x.GetProperty("episode_voice").GetString()!, EpisodeId: x.GetProperty("episode_id").GetString()!));
+            var episodeList = episodeDoc.RootElement.GetProperty("episode_list").EnumerateArray().Select(x => (EpisodeVoice: x.GetProperty("episode_voice").GetString()!, EpisodeId: x.GetProperty("episode_id").GetString()!)).ToArray();
             bool hasVoice = episodeList.FirstOrDefault().EpisodeVoice == "1";
+            ProgressTask task = ctx.AddTask($"[green]Archiving Puchi commu of Character {characterId}[/]", true, episodeList.Length);
             foreach (var episode in episodeList) {
                 string url = $"https://sp.pf.mbga.jp/12008305/?guid=ON&amp;url=http%3A%2F%2Fmobamas.net%2Fidolmaster%2Fpetit_cg%2Fpetit_show_episode%2F{characterId}%2F{episode.EpisodeId}%2Fcoordinate_idol%2F{position}%3Fvoice_flag%3D{(hasVoice ? "1" : "0")}%26l_frm%3DPetit_cg_index_1";
                 var stream = await client.GetStreamAsync(url);
@@ -399,7 +430,8 @@ try
                 stream.CopyTo(fileStream);
                 fileStream.Close();
 
-                await HandleEpisodeHtml(fileInfo);
+                await HandleEpisodeHtml(fileInfo, ctx);
+                task.Increment(1);
             }
         }
         string episodePattern = """
@@ -418,11 +450,13 @@ try
         }
 
         File.WriteAllText(info.FullName, sb.ToString());
+        await MatchDownloadAndReplace(info.FullName, info.FullName, "", ctx);
     }
 
-    async Task MatchDownloadAndReplace(string originalFilePath, string outputFilePath, string origin)
+    async Task MatchDownloadAndReplace(string originalFilePath, string outputFilePath, string origin, ProgressContext ctx)
     {
-        Console.WriteLine($"Recursively archiving contents of {originalFilePath}");
+        ConsoleLogger.LogTrace($"Recursively archiving contents of {originalFilePath}");
+
         int currentDepth = originalFilePath.Split(new[] { "\\", "/" }, StringSplitOptions.RemoveEmptyEntries).Skip(workingPathDepth).Count() - 1;
         string pathPrefix = GetPathPrefix(currentDepth);
         string text = File.ReadAllText(originalFilePath);
@@ -430,10 +464,11 @@ try
         var matches = originalFilePath.EndsWith(".css") ? Regex.Matches(text, @"(?<!@import )(?<opening>url(?<openParen>\()((?<openQuote>"")|(?<openSingle>'))?)(?<content>.*?)((?<closeQuote-openQuote>"")|(?<closeSingle-openSingle>'))?(?<closeParen-openParen>\))") :
             Regex.Matches(text, @"(?<opening>(?<openSingle>')|(?<openDouble>"")|(?<openParen>\())(?<content>http.*?)(?<closing>(?<closeSingle-openSingle>')|(?<closeDouble-openDouble>"")|(?<closeParen-openParen>\)))");
 
-        Console.WriteLine($"Match count: {matches.Count}");
-
+        ConsoleLogger.LogTrace($"Match count: {matches.Count}");
+        ProgressTask task = ctx.AddTask($"[lightgreen]Recursively Archiving...[/]", true, matches.Count);
         foreach (Match match in matches.DistinctBy(x => x.Value))
         {
+            task.Increment(1);
             //Console.WriteLine(match.Value);
 
             string rawUrl = match.Groups["content"].Value;
@@ -449,7 +484,7 @@ try
                 || LinkMatchesToSkip.Any(x => url == x)
                 || LinkContainsToSkip.Any(x => url.Contains(x)))
             {
-                Console.WriteLine($"Skipping {url} prematurely");
+                ConsoleLogger.LogTrace($"Skipping {url} prematurely");
                 continue;
             }
 
@@ -492,14 +527,14 @@ try
 
             if (file.Exists)
             {
-                Console.WriteLine($"Not downloading {filePath} as it exists");
+                ConsoleLogger.LogTrace($"Not downloading {filePath} as it exists");
             }
             else
             {
                 var response = await client.GetAsync(url);
                 if (!response.IsSuccessStatusCode || response.Content.Headers.ContentType.MediaType is "text/html" or "application/x-shockwave-flash")
                 {
-                    Console.WriteLine($"Skipping {url} ({response.StatusCode}) {response.Content.Headers.ContentType.MediaType}");
+                    ConsoleLogger.LogTrace($"Skipping {url} ({response.StatusCode}) {response.Content.Headers.ContentType.MediaType}");
                     SkipList.Add(url);
                     continue;
                 }
@@ -510,7 +545,7 @@ try
 
                 if (response.Content.Headers.ContentType.MediaType == "text/css")
                 {
-                    await MatchDownloadAndReplace(file.FullName, file.FullName, outerUrl.Host);
+                    await MatchDownloadAndReplace(file.FullName, file.FullName, outerUrl.Host, ctx);
                 }
             }
 
@@ -532,11 +567,13 @@ try
             var str = sb.Replace(match.Value, replaceString).ToString();
             File.WriteAllText(outputFilePath, str);
         }
+
+        task.StopTask();
     }
 
-    async Task DownloadEpisodes(string file, string idolName)
+    async Task DownloadEpisodes(string file, string idolName, ProgressContext ctx)
     {
-        Console.WriteLine($"Downloading episodes of {idolName}");
+        ConsoleLogger.LogInfo($"Downloading episodes of {idolName}");
         HtmlDocument doc = new();
         doc.Load(file);
 
@@ -549,8 +586,8 @@ try
         string storyListJson = Regex.Match(idolInitializationScript, @"\nidol\.idol_story_list = (.*);").Groups[1].Value;
         var idolDetails = JsonSerializer.Deserialize<IdolDetail[]>(detailListJson);
         var storyList = JsonSerializer.Deserialize<IdolStory[]>(storyListJson);
-        Console.WriteLine($"Expecting {storyList.Length * 2} episodes");
-
+        ConsoleLogger.LogTrace($"Expecting {storyList.Length * 2} episodes");
+        ProgressTask task = ctx.AddTask("[lightgreen]Downloading Episodes[/]", true, storyList.Length * 2);
         string idolHash = idolDetails![0].Data.HashCardId;
 
         var annivMessages = doc.DocumentNode.Descendants("form").Where(x => x.Attributes["class"]?.Value.StartsWith("form_check_idol_comment") == true);
@@ -559,7 +596,7 @@ try
         {
             var url = anniv.Attributes["action"].Value;
             var annivType = anniv.Attributes["class"].Value.Contains("3rd") ? "3rd" : "5th";
-            Console.WriteLine($"Downloading anniversary message: {annivType}");
+            ConsoleLogger.LogTrace($"Downloading anniversary message: {annivType}");
             var formContent = anniv.Descendants("input").Where(x => x.Attributes["name"] != null && x.Attributes["value"] != null)
                 .Select(x =>
                 {
@@ -588,7 +625,7 @@ try
             annivResponse.Content.ReadAsStream().CopyTo(fs2);
             fs2.Close();
 
-            await HandleEpisodeHtml(annivIndex);
+            await HandleEpisodeHtml(annivIndex, ctx);
 
             anniv.Attributes["action"].Value = $"anniversary/{annivType}";
             anniv.Attributes["method"].Value = $"get";
@@ -602,10 +639,10 @@ try
         {
             for (int i = 0; i < story.FlashPaths.Length; i++)
             {
-                Console.WriteLine($"Downloading episode {story.StoryId}_{i + 1}");
+                ConsoleLogger.LogInfo($"Downloading episode {story.StoryId}_{i + 1}");
                 if (story.OpenFlags[i] != "1")
                 {
-                    Console.WriteLine("Skipping episode (not open)");
+                    ConsoleLogger.LogInfo("Skipping episode (not open)");
                     continue;
                 }
 
@@ -622,11 +659,13 @@ try
                 FileStream fs = info.Create();
                 response.Content.ReadAsStream().CopyTo(fs);
                 fs.Close();
-                await HandleEpisodeHtml(info);
+                await HandleEpisodeHtml(info, ctx);
 
                 story.FlashPaths[i] = $"episodes/{story.StoryId}_{i + 1}";
+                task.Increment(1);
             }
         }
+        task.StopTask();
 
         var replacedIdolDetails = JsonSerializer.Serialize(storyList, new JsonSerializerOptions() { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping });
 
@@ -640,15 +679,17 @@ try
         doc.Save(file);
     }
 
-    async Task HandleEpisodeHtml(FileInfo info)
+    async Task HandleEpisodeHtml(FileInfo info, ProgressContext ctx)
     {
         int currentDepth = info.FullName.Split(new[] { "\\", "/" }, StringSplitOptions.RemoveEmptyEntries).Skip(workingPathDepth).Count() - 1;
         string pathPrefix = GetPathPrefix(currentDepth);
         string file = File.ReadAllText(info.FullName);
+        ProgressTask task = ctx.AddTask($"[lightgreen]Processing Episode[/]", true, 1);
+        task.IsIndeterminate = true;
 
         if (file.Contains("pex-1.2.0.js"))
         {
-            Console.WriteLine($"{info.FullName} is flash episode");
+            ConsoleLogger.LogTrace($"{info.FullName} is flash episode");
             var flashPath = Regex.Match(file, @"new Pex\('([^']*)',");
             var response = await client.GetAsync(flashPath.Groups[1].Value);
             FileInfo flashFile = new(Path.Join(info.Directory.FullName, "flash.swf"));
@@ -657,7 +698,7 @@ try
             fs.Close();
             file = file.Replace(flashPath.Groups[1].Value, "./flash.swf");
             File.WriteAllText(info.FullName, file);
-            await HandleFlashFile(flashFile.FullName);
+            await HandleFlashFile(flashFile.FullName, ctx);
         }
         else if (file.Contains("window.file_name = "))
         {
@@ -668,7 +709,7 @@ try
 
             if (fileName == "story_generator_n1")
             {
-                Console.WriteLine($"{info.FullName} is html episode (story_generator)");
+                ConsoleLogger.LogTrace($"{info.FullName} is html episode (story_generator)");
                 var scriptSource = doc.DocumentNode.Descendants("script").Select(x => x.GetAttributeValue("src", null)).First(x => x?.Contains(fileName.TrimStart('_')) == true);
                 var script = await client.GetStringAsync(scriptSource);
                 var manifest = Regex.Matches(script, @"(""|')(?<file>(image(s|_sp)|sounds)\/.*?)('|"")").Select(x => x.Groups["file"].Value);
@@ -679,8 +720,9 @@ try
                 var files = manifest.Select(x => "image_sp/cjs/genechara/" + x)
                     .Concat(charaImages)
                     .Concat(bgImages.Select(x => $"image_sp/event_flash/story/bg/bg{x}_wide.jpg"))
-                    .Distinct();
+                    .Distinct().ToArray();
 
+                ProgressTask voiceTask = ctx.AddTask($"[lightgreen]Downloading voice files[/]", true, files.Length);
                 foreach (var f in files)
                 {
                     var response = await client.GetAsync("https://sp.pf-img-a.mbga.jp/12008305/" + "?url=" + WebUtility.UrlEncode("http://mobamas.net/idolmaster/" + f));
@@ -689,6 +731,7 @@ try
                     FileStream fs = info2.Create();
                     response.Content.ReadAsStream().CopyTo(fs);
                     fs.Close();
+                    voiceTask.Increment(1);
                 }
 
                 file = file.Replace("image_server = \"https://sp.pf-img-a.mbga.jp/12008305/\";", $"image_server = \"{pathPrefix}/\";")
@@ -698,14 +741,16 @@ try
             }
             else
             {
-                Console.WriteLine($"{info.FullName} is html episode");
+                ConsoleLogger.LogTrace($"{info.FullName} is html episode");
                 var dirName = Regex.Match(file, @"window\.dir_name = ""(.*?)"";").Groups[1].Value;
                 var scriptSource = doc.DocumentNode.Descendants("script").Select(x => x.GetAttributeValue("src", null)).First(x => x?.Contains(fileName.TrimStart('_') + ".js") == true);
                 var script = await client.GetStringAsync(scriptSource);
                 var manifest = Regex.Matches(script, @"(""|')(?<file>image(s|_sp)\/.*?)('|"")").Select(x => x.Groups["file"].Value);
 
                 var files = manifest.Select(x => dirName + x)
-                    .Distinct();
+                    .Distinct().ToArray();
+
+                ProgressTask voiceTask = ctx.AddTask($"[lightgreen]Downloading voice files[/]", true, files.Length);
 
                 foreach (var f in files)
                 {
@@ -715,6 +760,7 @@ try
                     FileStream fs = info2.Create();
                     response.Content.ReadAsStream().CopyTo(fs);
                     fs.Close();
+                    voiceTask.Increment(1);
                 }
 
                 file = file.Replace("image_server = \"https://sp.pf-img-a.mbga.jp/12008305/\";", $"image_server = \"{pathPrefix}/\";")
@@ -724,8 +770,8 @@ try
             }
         }
 
-        await MatchDownloadAndReplace(info.FullName, info.FullName, "");
-
+        await MatchDownloadAndReplace(info.FullName, info.FullName, "", ctx);
+        task.StopTask();
     }
     string GetPathPrefix(int currentDepth)
     {
@@ -745,9 +791,9 @@ try
         return builder.ToString();
     }
 
-    async Task HandleFlashFile(string file)
+    async Task HandleFlashFile(string file, ProgressContext ctx)
     {
-        Console.WriteLine($"Processing flash file {file}");
+        ConsoleLogger.LogTrace($"Processing flash file {file}");
         int currentDepth = file.Split(new[] { "\\", "/" }, StringSplitOptions.RemoveEmptyEntries).Skip(workingPathDepth).Count() - 1;
         string pathPrefix = GetPathPrefix(currentDepth);
         using FileStream fs = File.OpenRead(file);
@@ -761,9 +807,11 @@ try
         returnUrlPushItem.String = "../..";
         returnUrlPush.Items[0] = returnUrlPushItem;
 
-        var stuffs = declarationAction.ActionRecords.Where(x => x is ActionPush push && push.Items[0].String.Contains("resource"));
+        var voices = declarationAction.ActionRecords.Where(x => x is ActionPush push && push.Items[0].String.Contains("resource")).ToArray();
 
-        foreach (ActionPush push in stuffs)
+        ProgressTask voiceTask = ctx.AddTask($"[lightgreen]Downloading voice files[/]", true, voices.Length);
+
+        foreach (ActionPush push in voices)
         {
             ActionPushItem pushItem = push.Items[0];
             Uri url = new(pushItem.String);
@@ -777,6 +825,7 @@ try
 
             pushItem.String = $"{pathPrefix}{localPath}";
             push.Items[0] = pushItem;
+            voiceTask.Increment(1);
         }
 
         fs.Close();
@@ -790,10 +839,11 @@ catch (Exception ex)
 #if DEBUG
     throw;
 #endif
-    Console.WriteLine($"An exception occurred: {ex}");
+    ConsoleLogger.LogError("An exception occurred:");
+    AnsiConsole.WriteException(ex);
 }
 
-Console.WriteLine("아무 키나 눌러 종료");
+AnsiConsole.WriteLine("아무 키나 눌러 종료");
 Console.ReadKey(true);
 
 record IdolStory([property: JsonConverter(typeof(CustomStringArrayReader))] [property: JsonPropertyName("flash_path")] string[] FlashPaths,
@@ -862,5 +912,30 @@ public class CustomStringArrayReader : JsonConverter<string?[]>
             writer.WriteStringValue(item);
         }
         writer.WriteEndArray();
+    }
+}
+
+internal static class ConsoleLogger {
+    public static void LogTrace(string str) {
+        AnsiConsole.MarkupLine($"[grey][[DEBG]] {str}[/]");
+    }
+    public static void LogInfo(string str) {
+        AnsiConsole.MarkupLine($"[white][[INFO]] {str}[/]");
+    }
+    public static void LogWarning(string str) {
+        AnsiConsole.MarkupLine($"[yellow][[WARN]] {str}[/]");
+    }
+    public static void LogError(string str) {
+        AnsiConsole.MarkupLine($"[red][[FAIL]] {str}[/]");
+    }
+}
+
+internal sealed class CountColumn : ProgressColumn {
+    public override IRenderable Render(RenderOptions options, ProgressTask task, TimeSpan deltaTime) {
+        string max = ((int)task.MaxValue).ToString("D");
+        int maxLength = max.Length;
+        string current = ((int)task.Value).ToString("D").PadLeft(maxLength);
+
+        return new Text($"{current} / {max}", Style.Plain);
     }
 }

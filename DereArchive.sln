@@ -7,6 +7,8 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "DereArchive", "DereArchive\
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "SwfLib", "..\SwfLib\SwfLib\SwfLib.csproj", "{0F7252A3-5876-435F-9C0C-8C529ECEBDC0}"
 EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Spectre.Console", "..\spectre.console\src\Spectre.Console\Spectre.Console.csproj", "{30E1652D-1FD4-4851-82F6-6E47870B0AA1}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -21,6 +23,10 @@ Global
 		{0F7252A3-5876-435F-9C0C-8C529ECEBDC0}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{0F7252A3-5876-435F-9C0C-8C529ECEBDC0}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{0F7252A3-5876-435F-9C0C-8C529ECEBDC0}.Release|Any CPU.Build.0 = Release|Any CPU
+		{30E1652D-1FD4-4851-82F6-6E47870B0AA1}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{30E1652D-1FD4-4851-82F6-6E47870B0AA1}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{30E1652D-1FD4-4851-82F6-6E47870B0AA1}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{30E1652D-1FD4-4851-82F6-6E47870B0AA1}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
