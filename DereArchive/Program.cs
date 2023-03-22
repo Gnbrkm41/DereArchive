@@ -15,7 +15,7 @@ using System.Web;
 // Configuration variables
 try
 {
-    Configuration config = JsonSerializer.Deserialize<Configuration>(File.ReadAllText(@"C:\Users\gotos\archive\configuration.json"), new JsonSerializerOptions(JsonSerializerDefaults.Web));
+    Configuration config = JsonSerializer.Deserialize<Configuration>(File.ReadAllText(@"configuration.json"), new JsonSerializerOptions(JsonSerializerDefaults.Web));
 
     string WorkingPath = config.WorkingPath;
     string token = config.Token;
@@ -87,6 +87,11 @@ try
         await HandleEpisodeHtml(info);
     }
 
+    if (!string.IsNullOrWhiteSpace(config.PuchiProfileName))
+    {
+        await ArchivePuchi(config.PuchiProfileName);
+    }
+
     File.Copy(@"pex-1.2.0.js", Path.Join(WorkingPath, "idolmaster", "js", "pex-1.2.0.js"), true);
     File.Copy(@"pex-1.2.0-kr.js", Path.Join(WorkingPath, "idolmaster", "js", "pex-1.2.0-kr.js"), true);
 
@@ -126,6 +131,241 @@ try
         doc.Save(info.FullName);
         await DownloadEpisodes(info.FullName, idolName);
         await MatchDownloadAndReplace(info.FullName, info.FullName, "");
+    }
+
+    string EscapePattern(string str) => str.Replace("(", "\\(").Replace(")", "\\)").Replace("{", "\\{").Replace("}", "\\}").Replace(".", "\\.").Replace("/", "\\/").Replace("?", "\\?").Replace("$", "\\$").Replace("\r\n", "\n");
+
+
+    async Task ArchivePuchi(string folderName)
+    {
+        const string puchiProfilePage = "https://sp.pf.mbga.jp/12008305/?guid=ON&url=http%3A%2F%2Fmobamas.net%2Fidolmaster%2Fpetit_cg%3Fview_page%3D4";
+
+        Console.WriteLine("Start archiving of Puchi profile");
+        var responseStream = await client.GetStreamAsync(puchiProfilePage);
+        FileInfo info = new(Path.Join(WorkingPath, "etc", folderName, "index.html"));
+        info.Directory?.Create();
+        FileStream fs = info.Create();
+        responseStream.CopyTo(fs);
+        fs.Close();
+
+        HtmlDocument doc = new();
+        doc.Load(info.FullName);
+
+        doc.DocumentNode.Descendants("div").First(x => x.Attributes["id"]?.Value == "mbga-pf-footer")
+            .Remove();
+
+        doc.Save(info.FullName);
+
+        await MatchDownloadAndReplace(info.FullName, info.FullName, "");
+        
+        StringBuilder sb = new(File.ReadAllText(info.FullName));
+        // TODO:
+        // 2. 'type' is 0
+        // 3. 'deck position' is 1~3
+        // 4. Send a post message, save it as coordinateList-{deckPosition}.json, save alongside the puchi index
+
+        {
+            string coordUrl = "https://sp.pf.mbga.jp/12008305/?guid=ON&amp;url=http%3A%2F%2Fmobamas.net%2Fidolmaster%2Fpetit_cg%2Fajax_coordinate_list%3Fl_frm%3DPetit_cg_index_1";
+            for (int i = 1; i <= 3; i++) {
+                HttpRequestMessage coordRequest = new(HttpMethod.Post, coordUrl);
+                coordRequest.Content = new FormUrlEncodedContent(new Dictionary<string, string>() { ["type"] = "0", ["deck_position"] = i.ToString() });
+                var coordResponse = await client.SendAsync(coordRequest);
+                var coordStream = await coordResponse.EnsureSuccessStatusCode().Content.ReadAsStreamAsync();
+                FileInfo coordFile = new(Path.Join(WorkingPath, "etc", folderName, $"coordinateList-{i}.json"));
+                using FileStream coordFileStream = coordFile.Create();
+                coordStream.CopyTo(coordFileStream);
+            }
+            string coordCodeReplace = """
+            let deckPosition = chara()
+            let url = `./coordinateList-${deckPosition}.json`
+            $.ajax({
+            type: 'GET',
+            url: url,
+            dataType: 'json',
+            })
+            """;
+            string coordCodePattern = """
+            $.ajax({
+            type: 'POST',
+            url: 'https://sp.pf.mbga.jp/12008305/?guid=ON&amp;url=http%3A%2F%2Fmobamas.net%2Fidolmaster%2Fpetit_cg%2Fajax_coordinate_list%3Fl_frm%3DPetit_cg_index_1%26rnd%3D\d+',
+            dataType: 'json',
+            data: {
+            "type": type,
+            "deck_position": chara()
+            }
+            })
+            """;
+            var coordMatch = Regex.Match(sb.ToString(), EscapePattern(coordCodePattern));
+            if (coordMatch.Success) {
+                sb.Replace(coordMatch.Groups[0].Value, coordCodeReplace);
+            }
+        }
+        {
+            string url = "https://sp.pf.mbga.jp/12008305/?guid=ON&amp;url=http%3A%2F%2Fmobamas.net%2Fidolmaster%2Fpetit_cg%2Fajax_idol_status%3Fl_frm%3DPetit_cg_index_1";
+            for (int i = 1; i <= 3; i++) {
+                HttpRequestMessage request = new(HttpMethod.Post, url);
+                request.Content = new FormUrlEncodedContent(new Dictionary<string, string>() { ["deck_position"] = i.ToString() });
+                var response = await client.SendAsync(request);
+                var stream = await response.EnsureSuccessStatusCode().Content.ReadAsStreamAsync();
+                FileInfo fileInfo = new(Path.Join(WorkingPath, "etc", folderName, $"idolStatus-{i}.json"));
+                using FileStream fileStream = fileInfo.Create();
+                stream.CopyTo(fileStream);
+            }
+            string replace = """
+            let deckPosition = chara()
+            let url = `./idolStatus-${deckPosition}.json`
+            $.ajax({
+            type: 'GET',
+            url: url,
+            dataType: 'json',
+            })
+            """;
+            string pattern = """
+            $.ajax({
+            type: 'POST',
+            url: 'https://sp.pf.mbga.jp/12008305/?guid=ON&amp;url=http%3A%2F%2Fmobamas.net%2Fidolmaster%2Fpetit_cg%2Fajax_idol_status%3Fl_frm%3DPetit_cg_index_1%26rnd%3D\d+',
+            dataType: 'json',
+            data: {
+            "deck_position": chara()
+            }
+            })
+            """;
+            var match = Regex.Match(sb.ToString(), EscapePattern(pattern));
+            if (match.Success) {
+                sb.Replace(match.Groups[0].Value, replace);
+            }
+        }
+
+        // Need to read which characters are there
+
+        var characterDataJson = Regex.Match(sb.ToString(), @"mc = new MakeCharacter\(\$\.parseJSON\('([^']*)'\)\)").Groups[1].Value;
+        using JsonDocument jsonDoc = JsonDocument.Parse(characterDataJson);
+
+        var characterIds = jsonDoc.RootElement.EnumerateObject().Select(x => new KeyValuePair<string, string>(x.Name, x.Value.GetProperty("idol_id").GetString())).ToArray();
+
+        {
+            string url = "https://sp.pf.mbga.jp/12008305/?guid=ON&amp;url=http%3A%2F%2Fmobamas.net%2Fidolmaster%2Fpetit_cg%2Fajax_episode_list%3Fl_frm%3DPetit_cg_index_1";
+            foreach ((string position, string characterId) in characterIds) {
+                HttpRequestMessage request = new(HttpMethod.Post, url);
+                request.Content = new FormUrlEncodedContent(new Dictionary<string, string>() { ["idol_id"] = characterId });
+                var response = await client.SendAsync(request);
+                var stream = await response.EnsureSuccessStatusCode().Content.ReadAsStreamAsync();
+                FileInfo fileInfo = new(Path.Join(WorkingPath, "etc", folderName, $"episodeList-{characterId}.json"));
+                using FileStream fileStream = fileInfo.Create();
+                stream.CopyTo(fileStream);
+            }
+            string replace = """
+            let url = `./episodeList-${idol_id}.json`
+            $.ajax({
+            type: 'GET',
+            url: url,
+            dataType: 'json',
+            })
+            """;
+            string pattern = """
+            $.ajax({
+            type: 'POST',
+            url: 'https://sp.pf.mbga.jp/12008305/?guid=ON&amp;url=http%3A%2F%2Fmobamas.net%2Fidolmaster%2Fpetit_cg%2Fajax_episode_list%3Fl_frm%3DPetit_cg_index_1%26rnd%3D\d+',
+            dataType: 'json',
+            data: {
+            'idol_id': idol_id
+            }
+            })
+            """;
+            var match = Regex.Match(sb.ToString(), EscapePattern(pattern));
+            if (match.Success) {
+                sb.Replace(match.Groups[0].Value, replace);
+            }
+        }
+
+        {
+            string url = "https://sp.pf.mbga.jp/12008305/?guid=ON&amp;url=http%3A%2F%2Fmobamas.net%2Fidolmaster%2Fpetit_cg%2Fajax_idol_comment_list%3Fl_frm%3DPetit_cg_index_1";
+            for (int i = 1; i <= 3; i++) {
+                HttpRequestMessage request = new(HttpMethod.Post, url);
+                request.Content = new FormUrlEncodedContent(new Dictionary<string, string>() { ["deck_position"] = i.ToString() });
+                var response = await client.SendAsync(request);
+                var stream = await response.EnsureSuccessStatusCode().Content.ReadAsStreamAsync();
+                FileInfo fileInfo = new(Path.Join(WorkingPath, "etc", folderName, $"idolCommentList-{i}.json"));
+                using FileStream fileStream = fileInfo.Create();
+                stream.CopyTo(fileStream);
+            }
+            string replace = """
+            let deckPosition = chara()
+            let url = `./idolCommentList-${deckPosition}.json`
+            $.ajax({
+            type: 'GET',
+            url: url,
+            dataType: 'json',
+            })
+            """;
+            string pattern = """
+            $.ajax({
+            type: 'POST',
+            url: 'https://sp.pf.mbga.jp/12008305/?guid=ON&amp;url=http%3A%2F%2Fmobamas.net%2Fidolmaster%2Fpetit_cg%2Fajax_idol_comment_list%3Fl_frm%3DPetit_cg_index_1%26rnd%3D\d+',
+            dataType: 'json',
+            data: {
+            'deck_position': chara()
+            }
+            })
+            """;
+            var match = Regex.Match(sb.ToString(), EscapePattern(pattern));
+            if (match.Success) {
+                sb.Replace(match.Groups[0].Value, replace);
+            }
+        }
+
+        string voiceFlagCode = """
+            function episodeVoiceFlag(data){
+            if(data.episode_list.length && data.episode_list[0].episode_voice == 1) $('#petitEpisodeVoiceFlg').show();
+            else $('#petitEpisodeVoiceFlg').hide();
+            }
+            """.Replace("\r\n", "\n");
+        string voiceFlagReplace = """
+            function episodeVoiceFlag(data){
+            $('#petitEpisodeVoiceFlg').hide();
+            }
+            """;
+        sb.Replace(voiceFlagCode, voiceFlagReplace);
+
+        string coordListPopulateCode = "createCoordinateList(data.accessory_list, data.take_off_info);";
+        string coordListPopulateReplace = "//createCoordinateList(data.accessory_list, data.take_off_info);";
+
+        sb.Replace(coordListPopulateCode, coordListPopulateReplace);
+
+        foreach ((string position, string characterId) in characterIds)
+        {
+            string content = File.ReadAllText(Path.Join(WorkingPath, "etc", folderName, $"episodeList-{characterId}.json"));
+            using JsonDocument episodeDoc = JsonDocument.Parse(content);
+            var episodeList = episodeDoc.RootElement.GetProperty("episode_list").EnumerateArray().Select(x => (EpisodeVoice: x.GetProperty("episode_voice").GetString()!, EpisodeId: x.GetProperty("episode_id").GetString()!));
+            bool hasVoice = episodeList.FirstOrDefault().EpisodeVoice == "1";
+            foreach (var episode in episodeList) {
+                string url = $"https://sp.pf.mbga.jp/12008305/?guid=ON&amp;url=http%3A%2F%2Fmobamas.net%2Fidolmaster%2Fpetit_cg%2Fpetit_show_episode%2F{characterId}%2F{episode.EpisodeId}%2Fcoordinate_idol%2F{position}%3Fvoice_flag%3D{(hasVoice ? "1" : "0")}%26l_frm%3DPetit_cg_index_1";
+                var stream = await client.GetStreamAsync(url);
+                FileInfo fileInfo = new(Path.Join(WorkingPath, "etc", folderName, characterId, episode.EpisodeId, "index.html"));
+                fileInfo.Directory?.Create();
+                FileStream fileStream = fileInfo.Create();
+                stream.CopyTo(fileStream);
+                fileStream.Close();
+
+                await HandleEpisodeHtml(fileInfo);
+            }
+        }
+        string episodePattern = """
+        var baseUrl = ('https://sp.pf.mbga.jp/12008305/?guid=ON&amp;url=http%3A%2F%2Fmobamas.net%2Fidolmaster%2Fpetit_cg%2Fpetit_show_episode%2F__idol_ld__%2F__episode__%2Fcoordinate_idol%2F__position__%3Fvoice_flag%3D0%26l_frm%3DPetit_cg_index_1%26rnd%3D\d+');
+        baseUrl = baseUrl.replace('__idol_ld__', idol_id);
+        baseUrl = baseUrl.replace('__position__', chara());
+        """;
+        string episodeReplace = """
+        var baseUrl = ('./__idol_ld__/__episode__');
+        baseUrl = baseUrl.replace('__idol_ld__', idol_id);
+        """;
+
+        var episodeMatch = Regex.Match(sb.ToString(), EscapePattern(episodePattern));
+        if (episodeMatch.Success) {
+            sb.Replace(episodeMatch.Groups[0].Value, episodeReplace);
+        }
+
+        File.WriteAllText(info.FullName, sb.ToString());
     }
 
     async Task MatchDownloadAndReplace(string originalFilePath, string outputFilePath, string origin)
@@ -516,7 +756,7 @@ record IdolStory([property: JsonConverter(typeof(CustomStringArrayReader))] [pro
 
 record IdolDetail([property: JsonPropertyName("data")] Data Data);
 record Data([property: JsonPropertyName("hash_card_id")] string HashCardId);
-record Configuration(string WorkingPath, string Token, string Pre, Idol[]? Idols, Commu[]? Commus);
+record Configuration(string WorkingPath, string Token, string Pre, Idol[]? Idols, Commu[]? Commus, string PuchiProfileName);
 record Idol(string IdolName, string GalleryUrl);
 record Commu(string CommuName, string CommuUrl);
 public class CustomStringArrayReader : JsonConverter<string?[]>
