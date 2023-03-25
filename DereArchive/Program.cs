@@ -181,7 +181,7 @@ try
                 ConsoleLogger.LogWarning($"Omitting unknown type of {group.Key}");
                 continue;
             }
-
+            sb.AppendLine();
             sb.AppendLine(title);
             foreach (var entry in group)
             {
@@ -798,6 +798,15 @@ try
         string pathPrefix = GetPathPrefix(currentDepth);
         using FileStream fs = File.OpenRead(file);
         var swf = SwfFile.ReadFrom(fs);
+
+        foreach (DoActionTag doAction in swf.Tags.Where(x => x is DoActionTag))
+        {
+            // Re-calculating jump offsets.
+            // *This is assuming all jumps are forward jumps*. This appears to be true in most cases but we're not sure if that actually is true.
+            foreach (var records in doAction.ActionRecords) {
+
+            }
+        }
 
         DoActionTag declarationAction = (DoActionTag)swf.Tags.Where(x => x is DoActionTag)
             .First(x => ((DoActionTag)x).ActionRecords.Any(x => x is ActionPush push && push.Items[0].String.StartsWith("url")));
